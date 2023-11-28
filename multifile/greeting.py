@@ -14,5 +14,5 @@ elif time == "evening":
 else:
     print(f"I am sorry {name} i dont know {time}")
 
-print("\n\n\n\An***************************\n")
+print("\n\n\n***************************\n")
 
