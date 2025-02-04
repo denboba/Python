@@ -38,6 +38,22 @@ class _ChatScreenState extends State<ChatScreen> {
   late ScrollController _scrollController;
   StreamSubscription? _chatSubscription;
 
+
+
+  void _setupChat() async {
+    try {
+      // First mark messages as delivered
+      await _chatProvider.markMessageAsRead(widget.chatRoomId, _currentUserId);
+
+      // Then update chat state and mark messages as seen
+      await _chatProvider.updateUserChatState(_currentUserId, widget.chatRoomId);
+      _chatProvider.setInChatRoom(true, _currentUserId);
+    } catch (e) {
+      print('Error setting up chat: $e');
+    }
+  }
+
+
   @override
   void initState() {
     super.initState();
@@ -47,38 +63,25 @@ class _ChatScreenState extends State<ChatScreen> {
     _currentUserId = Provider.of<HymedCareAuthProvider>(context, listen: false)
         .currentUserId;
     _setupChat();
+    _setupPresence();
   }
 
-  void _setupChat() async {
-    try {
-      // First mark messages as delivered
-      await _chatProvider.markMessageAsRead(widget.chatRoomId, _currentUserId);
-      
-      // Then update chat state and mark messages as seen
-      await _chatProvider.updateUserChatState(_currentUserId, widget.chatRoomId);
-      _chatProvider.setInChatRoom(true, _currentUserId);
-    } catch (e) {
-      print('Error setting up chat: $e');
-    }
+  void _setupPresence() {
+    _chatProvider.initializeUserPresence(_currentUserId);
   }
 
   @override
   void dispose() {
+    _chatProvider.cleanupUserPresence(_currentUserId);
     _messageController.dispose();
     _scrollController.dispose();
     _chatSubscription?.cancel();
-    _recordingTimer?.cancel();
-    _audioPlayer.dispose();
-
-    // First set chat room state to false to prevent any new seen updates
-    _chatProvider.setInChatRoom(false, _currentUserId);
-    
-    // Then update user state and mark messages as delivered
-    _chatProvider.updateUserChatState(_currentUserId, null);
-
     super.dispose();
   }
 
+  void _handleMessageInput(String text) {
+    _chatProvider.handleTyping(_currentUserId, widget.chatRoomId, text);
+  }
   void _cleanupChat() async {
     try {
       // First set the chat state to false to prevent any new "seen" updates

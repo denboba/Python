@@ -24,16 +24,28 @@ class ChatRoomProvider extends ChangeNotifier {
   bool get isRecording => _isRecording;
   bool get isPaused => _isPaused;
 
-  void setInChatRoom(bool value, String userId) {
+  void setInChatRoom(bool value, String userId) async {
     if (_isInChatRoom != value) {
       _isInChatRoom = value;
       _currentUserId = userId;
-      if (value) {
-        _firestoreService.enterChatRoom(userId);
-      } else {
-        _firestoreService.leaveChatRoom(userId);
+
+      try {
+        if (value) {
+          await _firestoreService.enterChatRoom(userId);
+          // Mark messages as read when entering chat room
+          if (_currentRoomId != null) {
+            await markMessageAsRead(_currentRoomId!, userId);
+          }
+        } else {
+          await _firestoreService.leaveChatRoom(userId);
+        }
+        notifyListeners();
+      } catch (e) {
+        print('Error updating chat room status: $e');
+        // Revert the state if there's an error
+        _isInChatRoom = !value;
+        notifyListeners();
       }
-      notifyListeners();
     }
   }
 
@@ -45,10 +57,10 @@ class ChatRoomProvider extends ChangeNotifier {
     if (senderId.isEmpty || receiverId.isEmpty) {
       throw ArgumentError('Sender ID and Receiver ID cannot be empty');
     }
-    
+
     try {
       final chatRoomRef = _firestore.collection('chatrooms');
-      
+
       // Query for existing chat room
       final existingChatRooms = await chatRoomRef
           .where('participants', arrayContains: senderId)
@@ -169,20 +181,28 @@ class ChatRoomProvider extends ChangeNotifier {
       final receiverId = participants.firstWhere((id) => id != senderId, orElse: () => '');
 
       // Get receiver's online status and current chat
-      final receiverDoc = await _firestore.collection('users').doc(receiverId).get();
-      final receiverData = receiverDoc.data();
-      final isReceiverInChat = receiverData?['current_chat_id'] == chatId;
-      final isReceiverOnline = receiverData?['online'] ?? false;
-
+      // final receiverDoc = await _firestore.collection('users').doc(receiverId).get();
+      // final receiverData = receiverDoc.data();
+      final isReceiverInChat =  await _firestoreService.isUserOnline(receiverId);
       // Always start with 'sent' status
       String messageStatus = 'sent';
-      if (isReceiverOnline) {
-        messageStatus = 'delivered';
+      final unreadCount = Map<String, dynamic>.from(
+          chatData['unread_count'] ?? {});
+      if (isReceiverInChat) {
+        messageStatus = 'seen';
+        await _firestore.collection('chatrooms').doc(chatId).update({
+          'unread_count': 0
+        });
+      }else {
+        unreadCount[receiverId] = (unreadCount[receiverId] ?? 0) + 1;
+
+        await _firestore.collection('chatrooms').doc(chatId).update({
+        'unread_count': unreadCount
+        });
       }
 
-      // Update unread count for receiver
-      final unreadCount = Map<String, dynamic>.from(chatData['unread_count'] ?? {});
-      unreadCount[receiverId] = (unreadCount[receiverId] ?? 0) + 1;
+
+
 
       // Create message document
       final messageRef = _firestore
@@ -267,7 +287,7 @@ class ChatRoomProvider extends ChangeNotifier {
     try {
       final batch = _firestore.batch();
       final userRef = _firestore.collection('users').doc(userId);
-      
+
       // Get current chat ID before updating
       final userDoc = await userRef.get();
       final currentChatId = userDoc.data()?['current_chat_id'];
@@ -309,7 +329,7 @@ class ChatRoomProvider extends ChangeNotifier {
         final directory = await getApplicationDocumentsDirectory();
         final String path = '${directory.path}/recording_${DateTime.now().millisecondsSinceEpoch}.m4a';
         _recordingPath = path;
-        
+
         // Start recording with the generated path
         await _audioRecorder.start(path: path);
         _isRecording = true;
@@ -326,7 +346,7 @@ class ChatRoomProvider extends ChangeNotifier {
   Future<String?> stopRecording() async {
     try {
       if (!_isRecording) return null;
-      
+
       final path = await _audioRecorder.stop();
       _isRecording = false;
       _isPaused = false;
@@ -382,7 +402,7 @@ class ChatRoomProvider extends ChangeNotifier {
   Future<void> sendVoiceMessage(String chatId, String senderId, String filePath) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      
+
       // Upload audio file to Firebase Storage
       final storageRef = _storage.ref().child('voice_messages/$chatId/$timestamp.m4a');
       final uploadTask = storageRef.putFile(File(filePath));
@@ -422,7 +442,7 @@ class ChatRoomProvider extends ChangeNotifier {
 
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final file = File(image.path);
-      
+
       // Upload image to Firebase Storage
       final storageRef = _storage.ref().child('chat_images/$chatId/$timestamp.jpg');
       final uploadTask = storageRef.putFile(file);
@@ -482,4 +502,26 @@ class ChatRoomProvider extends ChangeNotifier {
   }
 
   String? get currentRoomId => _currentRoomId;
+  Future<void> initializeUserPresence(String userId) async {
+    await _firestoreService.initUserPresence(userId);
+  }
+
+  Future<void> cleanupUserPresence(String userId) async {
+    await _firestoreService.cleanupPresence(userId);
+  }
+
+  Stream<bool> getUserPresence(String userId) {
+    return _firestoreService.getUserPresenceStream(userId)
+        .map((event) => event.snapshot.value as bool? ?? false);
+  }
+
+  Future<void> handleTyping(String userId, String chatRoomId, String text) async {
+    final isTyping = text.isNotEmpty;
+    await _firestoreService.setUserTyping(userId, chatRoomId, isTyping);
+  }
+
+  Stream<bool> getTypingStatus(String chatRoomId, String userId) {
+    return _firestoreService.getTypingStream(chatRoomId, userId)
+        .map((event) => event.snapshot.value as bool? ?? false);
+  }
 }
